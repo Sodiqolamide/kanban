@@ -6,11 +6,16 @@ import { createInitialBoardData } from "@/data/board-data";
 import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
 import { isAllowedCrossColumnCardMove, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
 import {
+	BOARD_LABEL_NAME_MAX_LENGTH,
+	BOARD_MAX_LABELS,
 	type BoardCard,
 	type BoardColumn,
 	type BoardColumnId,
 	type BoardData,
 	type BoardDependency,
+	type BoardLabel,
+	type BoardLabelColor,
+	CARD_MAX_LABELS,
 	type CardSelection,
 	DEFAULT_TASK_AUTO_REVIEW_MODE,
 	resolveTaskAutoReviewMode,
@@ -28,6 +33,7 @@ export interface TaskDraft {
 	agentId?: RuntimeAgentId;
 	clineSettings?: RuntimeTaskClineSettings;
 	baseRef: string;
+	labelIds?: string[];
 }
 
 export interface TaskMoveEvent {
@@ -143,6 +149,42 @@ function normalizeTaskClineSettings(input: {
 	};
 }
 
+function isValidLabelColorInternal(color: unknown): color is BoardLabelColor {
+	return (
+		color === "red" ||
+		color === "orange" ||
+		color === "yellow" ||
+		color === "green" ||
+		color === "blue" ||
+		color === "purple" ||
+		color === "gray"
+	);
+}
+
+function normalizeLabel(rawLabel: unknown): BoardLabel | null {
+	if (!rawLabel || typeof rawLabel !== "object") {
+		return null;
+	}
+	const label = rawLabel as { id?: unknown; name?: unknown; color?: unknown; createdAt?: unknown };
+	if (typeof label.id !== "string" || !label.id) {
+		return null;
+	}
+	const rawName = typeof label.name === "string" ? label.name.trim() : "";
+	if (!rawName) {
+		return null;
+	}
+	const name = rawName.length > BOARD_LABEL_NAME_MAX_LENGTH ? rawName.slice(0, BOARD_LABEL_NAME_MAX_LENGTH) : rawName;
+	if (!isValidLabelColorInternal(label.color)) {
+		return null;
+	}
+	return {
+		id: label.id,
+		name,
+		color: label.color,
+		createdAt: typeof label.createdAt === "number" ? label.createdAt : Date.now(),
+	};
+}
+
 function normalizeCard(rawCard: unknown): BoardCard | null {
 	if (!rawCard || typeof rawCard !== "object") {
 		return null;
@@ -164,6 +206,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		clineReasoningEffort?: unknown;
 		createdAt?: unknown;
 		updatedAt?: unknown;
+		labelIds?: unknown;
 	};
 	const prompt = typeof card.prompt === "string" ? card.prompt.trim() : "";
 	if (!prompt) {
@@ -184,6 +227,16 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		legacyReasoningEffort: card.clineReasoningEffort,
 	});
 
+	const rawLabelIds = Array.isArray(card.labelIds)
+		? [
+				...new Set(
+					(card.labelIds as unknown[])
+						.filter((id): id is string => typeof id === "string")
+						.slice(0, CARD_MAX_LABELS),
+				),
+			]
+		: undefined;
+
 	const now = Date.now();
 
 	return {
@@ -199,6 +252,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		baseRef,
 		...(typeof card.agentId === "string" && card.agentId ? { agentId: card.agentId as RuntimeAgentId } : {}),
 		...(clineSettings !== undefined ? { clineSettings } : {}),
+		...(rawLabelIds && rawLabelIds.length > 0 ? { labelIds: rawLabelIds } : {}),
 		createdAt: typeof card.createdAt === "number" ? card.createdAt : now,
 		updatedAt: typeof card.updatedAt === "number" ? card.updatedAt : now,
 	};
@@ -267,9 +321,24 @@ export function normalizeBoardData(rawBoard: unknown): BoardData | null {
 
 	const candidateColumns = (rawBoard as { columns?: unknown }).columns;
 	const candidateDependencies = (rawBoard as { dependencies?: unknown }).dependencies;
+	const candidateLabels = (rawBoard as { labels?: unknown }).labels;
 	if (!Array.isArray(candidateColumns)) {
 		return null;
 	}
+
+	// 1. Normalize labels: dedup by id (last wins), drop invalid, cap at BOARD_MAX_LABELS
+	const labelMap = new Map<string, BoardLabel>();
+	if (Array.isArray(candidateLabels)) {
+		for (const rawLabel of candidateLabels) {
+			const label = normalizeLabel(rawLabel);
+			if (label) {
+				labelMap.set(label.id, label);
+			}
+		}
+	}
+	const allLabels = [...labelMap.values()];
+	const finalLabels = allLabels.length > BOARD_MAX_LABELS ? allLabels.slice(0, BOARD_MAX_LABELS) : allLabels;
+	const validLabelIds = new Set(finalLabels.map((l) => l.id));
 
 	const initial = createInitialBoardData();
 	const normalizedColumns = initial.columns.map((column) => ({ ...column, cards: [] as BoardCard[] }));
@@ -299,6 +368,26 @@ export function normalizeBoardData(rawBoard: unknown): BoardData | null {
 		}
 	}
 
+	// 2. Prune orphaned labelIds from all cards (labelIds referencing non-existent labels)
+	for (const column of normalizedColumns) {
+		column.cards = column.cards.map((card) => {
+			if (!card.labelIds || card.labelIds.length === 0) {
+				return card;
+			}
+			const prunedLabelIds = card.labelIds.filter((id) => validLabelIds.has(id));
+			if (prunedLabelIds.length === card.labelIds.length) {
+				return card;
+			}
+			const newCard = { ...card };
+			if (prunedLabelIds.length === 0) {
+				delete newCard.labelIds;
+			} else {
+				newCard.labelIds = prunedLabelIds;
+			}
+			return newCard;
+		});
+	}
+
 	const taskIds = collectTaskIds(normalizedColumns);
 	const normalizedDependencies: BoardDependency[] = [];
 	if (Array.isArray(candidateDependencies)) {
@@ -311,10 +400,12 @@ export function normalizeBoardData(rawBoard: unknown): BoardData | null {
 		}
 	}
 
-	return runtimeTaskState.updateTaskDependencies({
+	const boardResult = runtimeTaskState.updateTaskDependencies({
 		columns: normalizedColumns,
 		dependencies: normalizedDependencies,
+		labels: finalLabels,
 	});
+	return { ...boardResult, labels: finalLabels };
 }
 
 export function addTaskToColumn(board: BoardData, columnId: BoardColumnId, draft: TaskDraft): BoardData {
@@ -350,9 +441,35 @@ export function addTaskToColumnWithResult(
 		},
 		createBrowserUuid,
 	);
+
+	// Preserve labels (runtime doesn't know about them)
+	let boardWithLabels: BoardData = { ...result.board, labels: board.labels };
+	let createdTask = result.task;
+
+	// Apply labelIds from draft if provided
+	if (draft.labelIds && draft.labelIds.length > 0) {
+		const validLabelIds = new Set(board.labels.map((l) => l.id));
+		const filteredIds = [...new Set(draft.labelIds.filter((id) => validLabelIds.has(id)))];
+		const cappedIds = filteredIds.slice(0, CARD_MAX_LABELS);
+		if (cappedIds.length > 0) {
+			boardWithLabels = {
+				...boardWithLabels,
+				columns: boardWithLabels.columns.map((col) => ({
+					...col,
+					cards: col.cards.map((card) => {
+						if (card.id !== createdTask.id) return card;
+						const updatedCard = { ...card, labelIds: cappedIds };
+						createdTask = updatedCard;
+						return updatedCard;
+					}),
+				})),
+			};
+		}
+	}
+
 	return {
-		board: result.board,
-		task: result.task,
+		board: boardWithLabels,
+		task: createdTask,
 	};
 }
 
@@ -520,6 +637,8 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 		return { board, updated: false };
 	}
 
+	const validLabelIds = new Set(board.labels.map((l) => l.id));
+
 	let updated = false;
 	const columns = board.columns.map((column) => {
 		let columnUpdated = false;
@@ -529,7 +648,25 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 			}
 			columnUpdated = true;
 			updated = true;
-			return {
+
+			// 3-way labelIds behavior:
+			// undefined → preserve existing card.labelIds
+			// [] → clear (delete labelIds)
+			// [...] → replace with valid ids only (filter, dedup, cap)
+			let newLabelIds: string[] | undefined;
+			if (draft.labelIds === undefined) {
+				newLabelIds = card.labelIds;
+			} else if (draft.labelIds.length === 0) {
+				newLabelIds = undefined;
+			} else {
+				const filtered = [...new Set(draft.labelIds.filter((id) => validLabelIds.has(id)))].slice(
+					0,
+					CARD_MAX_LABELS,
+				);
+				newLabelIds = filtered.length > 0 ? filtered : undefined;
+			}
+
+			const newCard: BoardCard = {
 				...card,
 				title: title || card.title,
 				prompt,
@@ -547,6 +684,12 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 				baseRef,
 				updatedAt: Date.now(),
 			};
+			if (newLabelIds !== undefined) {
+				newCard.labelIds = newLabelIds;
+			} else {
+				delete newCard.labelIds;
+			}
+			return newCard;
 		});
 		return columnUpdated ? { ...column, cards } : column;
 	});
@@ -576,6 +719,7 @@ export function updateTaskTitle(
 		agentId: selection.card.agentId,
 		clineSettings: selection.card.clineSettings,
 		baseRef: selection.card.baseRef,
+		labelIds: selection.card.labelIds,
 	});
 }
 
@@ -607,6 +751,7 @@ export function applyTaskDetailClineSettingsSelection(
 		agentId: settings.agentId,
 		clineSettings: settings.clineSettings ?? undefined,
 		baseRef: selection.card.baseRef,
+		labelIds: selection.card.labelIds,
 	});
 }
 
@@ -665,6 +810,7 @@ export function disableTaskAutoReview(board: BoardData, taskId: string): { board
 		agentId: selection.card.agentId,
 		clineSettings: selection.card.clineSettings,
 		baseRef: selection.card.baseRef,
+		labelIds: selection.card.labelIds,
 	});
 }
 
@@ -723,4 +869,184 @@ export function findCardSelection(board: BoardData, taskId: string): CardSelecti
 
 export function getTaskColumnId(board: BoardData, taskId: string): BoardColumnId | null {
 	return runtimeTaskState.getTaskColumnId(board, taskId);
+}
+
+// ─── Board Label Operations ───────────────────────────────────────────────────
+
+export function addBoardLabel(
+	board: BoardData,
+	name: string,
+	color: BoardLabelColor,
+): { board: BoardData; label: BoardLabel; added: boolean } {
+	const trimmedName = name.trim();
+	if (!trimmedName || !isValidLabelColorInternal(color)) {
+		return { board, label: { id: "", name: trimmedName, color, createdAt: 0 }, added: false };
+	}
+	if (board.labels.length >= BOARD_MAX_LABELS) {
+		return { board, label: { id: "", name: trimmedName, color, createdAt: 0 }, added: false };
+	}
+	const finalName =
+		trimmedName.length > BOARD_LABEL_NAME_MAX_LENGTH
+			? trimmedName.slice(0, BOARD_LABEL_NAME_MAX_LENGTH)
+			: trimmedName;
+	const label: BoardLabel = {
+		id: createBrowserUuid(),
+		name: finalName,
+		color,
+		createdAt: Date.now(),
+	};
+	return {
+		board: { ...board, labels: [...board.labels, label] },
+		label,
+		added: true,
+	};
+}
+
+export function removeBoardLabel(board: BoardData, labelId: string): BoardData {
+	const index = board.labels.findIndex((l) => l.id === labelId);
+	if (index === -1) {
+		return board;
+	}
+	const labels = board.labels.filter((l) => l.id !== labelId);
+	// Cascade removal to all cards in all columns
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (!card.labelIds?.includes(labelId)) {
+				return card;
+			}
+			const newLabelIds = card.labelIds.filter((id) => id !== labelId);
+			const newCard = { ...card };
+			if (newLabelIds.length === 0) {
+				delete newCard.labelIds;
+			} else {
+				newCard.labelIds = newLabelIds;
+			}
+			return newCard;
+		}),
+	}));
+	return { ...board, labels, columns };
+}
+
+export function updateBoardLabel(
+	board: BoardData,
+	labelId: string,
+	updates: { name?: string; color?: BoardLabelColor },
+): BoardData {
+	const index = board.labels.findIndex((l) => l.id === labelId);
+	if (index === -1) {
+		return board;
+	}
+	const existing = board.labels[index]!;
+	let newName = existing.name;
+	let newColor = existing.color;
+	if (updates.name !== undefined) {
+		const trimmed = updates.name.trim();
+		if (!trimmed) {
+			return board;
+		}
+		newName = trimmed.length > BOARD_LABEL_NAME_MAX_LENGTH ? trimmed.slice(0, BOARD_LABEL_NAME_MAX_LENGTH) : trimmed;
+	}
+	if (updates.color !== undefined) {
+		if (!isValidLabelColorInternal(updates.color)) {
+			return board;
+		}
+		newColor = updates.color;
+	}
+	const updatedLabel: BoardLabel = { ...existing, name: newName, color: newColor };
+	const labels = board.labels.map((l) => (l.id === labelId ? updatedLabel : l));
+	return { ...board, labels };
+}
+
+export function addLabelToCard(
+	board: BoardData,
+	taskId: string,
+	labelId: string,
+): { board: BoardData; added: boolean } {
+	const labelExists = board.labels.some((l) => l.id === labelId);
+	if (!labelExists) {
+		return { board, added: false };
+	}
+	let foundTask = false;
+	let alreadyHas = false;
+	let atCapacity = false;
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (card.id !== taskId) return card;
+			foundTask = true;
+			if (card.labelIds?.includes(labelId)) {
+				alreadyHas = true;
+				return card;
+			}
+			if ((card.labelIds?.length ?? 0) >= CARD_MAX_LABELS) {
+				atCapacity = true;
+				return card;
+			}
+			return { ...card, labelIds: [...(card.labelIds ?? []), labelId] };
+		}),
+	}));
+	if (!foundTask) {
+		return { board, added: false };
+	}
+	if (alreadyHas) {
+		return { board, added: false };
+	}
+	if (atCapacity) {
+		return { board, added: false };
+	}
+	return { board: { ...board, columns }, added: true };
+}
+
+export function removeLabelFromCard(
+	board: BoardData,
+	taskId: string,
+	labelId: string,
+): { board: BoardData; removed: boolean } {
+	let removed = false;
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (card.id !== taskId) return card;
+			if (!card.labelIds?.includes(labelId)) return card;
+			removed = true;
+			const newLabelIds = card.labelIds.filter((id) => id !== labelId);
+			const newCard = { ...card };
+			if (newLabelIds.length === 0) {
+				delete newCard.labelIds;
+			} else {
+				newCard.labelIds = newLabelIds;
+			}
+			return newCard;
+		}),
+	}));
+	if (!removed) {
+		return { board, removed: false };
+	}
+	return { board: { ...board, columns }, removed: true };
+}
+
+export function setCardLabels(board: BoardData, taskId: string, labelIds: string[]): BoardData {
+	let foundTask = false;
+	const validLabelIds = new Set(board.labels.map((l) => l.id));
+	// Silently drop non-existent ids, deduplicate
+	const filteredIds = [...new Set(labelIds.filter((id) => validLabelIds.has(id)))];
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (card.id !== taskId) return card;
+			foundTask = true;
+			const newCard = { ...card };
+			if (filteredIds.length === 0) {
+				delete newCard.labelIds;
+			} else {
+				newCard.labelIds = filteredIds;
+			}
+			return newCard;
+		}),
+	}));
+	if (!foundTask) {
+		return board;
+	}
+	return { ...board, columns };
 }
