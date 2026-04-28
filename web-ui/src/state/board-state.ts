@@ -28,6 +28,7 @@ export interface TaskDraft {
 	agentId?: RuntimeAgentId;
 	clineSettings?: RuntimeTaskClineSettings;
 	baseRef: string;
+	dueDate?: number | null;
 }
 
 export interface TaskMoveEvent {
@@ -164,6 +165,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		clineReasoningEffort?: unknown;
 		createdAt?: unknown;
 		updatedAt?: unknown;
+		dueDate?: unknown;
 	};
 	const prompt = typeof card.prompt === "string" ? card.prompt.trim() : "";
 	if (!prompt) {
@@ -199,6 +201,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		baseRef,
 		...(typeof card.agentId === "string" && card.agentId ? { agentId: card.agentId as RuntimeAgentId } : {}),
 		...(clineSettings !== undefined ? { clineSettings } : {}),
+		...(typeof card.dueDate === "number" && card.dueDate > 0 ? { dueDate: card.dueDate } : {}),
 		createdAt: typeof card.createdAt === "number" ? card.createdAt : now,
 		updatedAt: typeof card.updatedAt === "number" ? card.updatedAt : now,
 	};
@@ -350,6 +353,24 @@ export function addTaskToColumnWithResult(
 		},
 		createBrowserUuid,
 	);
+
+	// Apply dueDate from draft if provided and positive
+	const dueDate = typeof draft.dueDate === "number" && draft.dueDate > 0 ? draft.dueDate : undefined;
+	if (dueDate !== undefined) {
+		const updatedColumns = result.board.columns.map((col) => ({
+			...col,
+			cards: col.cards.map((card) => {
+				if (card.id !== result.task.id) return card;
+				return { ...card, dueDate };
+			}),
+		}));
+		const updatedTask = { ...result.task, dueDate };
+		return {
+			board: { ...result.board, columns: updatedColumns },
+			task: updatedTask,
+		};
+	}
+
 	return {
 		board: result.board,
 		task: result.task,
@@ -529,7 +550,18 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 			}
 			columnUpdated = true;
 			updated = true;
-			return {
+
+			// Three-way dueDate: undefined preserves, null clears, positive number sets
+			let newDueDate: number | undefined;
+			if (draft.dueDate === undefined) {
+				newDueDate = card.dueDate;
+			} else if (draft.dueDate === null || draft.dueDate <= 0) {
+				newDueDate = undefined;
+			} else {
+				newDueDate = draft.dueDate;
+			}
+
+			const newCard: BoardCard = {
 				...card,
 				title: title || card.title,
 				prompt,
@@ -547,6 +579,12 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 				baseRef,
 				updatedAt: Date.now(),
 			};
+			if (newDueDate !== undefined) {
+				newCard.dueDate = newDueDate;
+			} else {
+				delete newCard.dueDate;
+			}
+			return newCard;
 		});
 		return columnUpdated ? { ...column, cards } : column;
 	});
@@ -576,6 +614,7 @@ export function updateTaskTitle(
 		agentId: selection.card.agentId,
 		clineSettings: selection.card.clineSettings,
 		baseRef: selection.card.baseRef,
+		dueDate: selection.card.dueDate,
 	});
 }
 
@@ -607,6 +646,7 @@ export function applyTaskDetailClineSettingsSelection(
 		agentId: settings.agentId,
 		clineSettings: settings.clineSettings ?? undefined,
 		baseRef: selection.card.baseRef,
+		dueDate: selection.card.dueDate,
 	});
 }
 
@@ -665,6 +705,7 @@ export function disableTaskAutoReview(board: BoardData, taskId: string): { board
 		agentId: selection.card.agentId,
 		clineSettings: selection.card.clineSettings,
 		baseRef: selection.card.baseRef,
+		dueDate: selection.card.dueDate,
 	});
 }
 
@@ -723,4 +764,43 @@ export function findCardSelection(board: BoardData, taskId: string): CardSelecti
 
 export function getTaskColumnId(board: BoardData, taskId: string): BoardColumnId | null {
 	return runtimeTaskState.getTaskColumnId(board, taskId);
+}
+
+// ─── Card Due Date Operations ─────────────────────────────────────────────────
+
+export function setCardDueDate(board: BoardData, taskId: string, dueDate: number): BoardData {
+	if (dueDate <= 0) {
+		return board;
+	}
+	let found = false;
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (card.id !== taskId) return card;
+			found = true;
+			return { ...card, dueDate };
+		}),
+	}));
+	if (!found) {
+		return board;
+	}
+	return { ...board, columns };
+}
+
+export function clearCardDueDate(board: BoardData, taskId: string): BoardData {
+	let found = false;
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (card.id !== taskId) return card;
+			found = true;
+			const newCard = { ...card };
+			delete newCard.dueDate;
+			return newCard;
+		}),
+	}));
+	if (!found) {
+		return board;
+	}
+	return { ...board, columns };
 }

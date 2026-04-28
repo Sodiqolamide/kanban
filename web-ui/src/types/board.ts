@@ -55,6 +55,7 @@ export interface BoardCard {
 	baseRef: string;
 	createdAt: number;
 	updatedAt: number;
+	dueDate?: number;
 }
 
 export interface BoardColumn {
