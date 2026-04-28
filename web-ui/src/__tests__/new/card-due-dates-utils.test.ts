@@ -24,8 +24,8 @@ function makeBoard() {
 	return createInitialBoardData();
 }
 
-function addCard(board: ReturnType<typeof makeBoard>, dueDate?: number) {
-	const result = addTaskToColumnWithResult(board, "backlog", {
+function addCard(board: ReturnType<typeof makeBoard>, dueDate?: number, column: string = "backlog") {
+	const result = addTaskToColumnWithResult(board, column as "backlog", {
 		prompt: "Task",
 		baseRef: "main",
 		dueDate,
@@ -259,5 +259,75 @@ describe("getNearestDueDate", () => {
 		board = addCard(board).board;
 		board = addCard(board, 999).board;
 		expect(getNearestDueDate(board)).toBe(999);
+	});
+});
+
+// ─── Cross-column behavior ────────────────────────────────────────────────
+
+describe("cross-column behavior", () => {
+	it("getOverdueCards finds cards in non-backlog columns", () => {
+		let board = makeBoard();
+		board = addCard(board, NOW - 1, "in_progress").board;
+		board = addCard(board, NOW + 1, "review").board;
+		const overdue = getOverdueCards(board, NOW);
+		expect(overdue).toHaveLength(1);
+		expect(overdue[0]?.dueDate).toBe(NOW - 1);
+	});
+
+	it("getCardsWithDueDate finds cards across all columns", () => {
+		let board = makeBoard();
+		board = addCard(board, 100, "backlog").board;
+		board = addCard(board, 200, "in_progress").board;
+		board = addCard(board, undefined, "review").board;
+		expect(getCardsWithDueDate(board)).toHaveLength(2);
+	});
+
+	it("getUnscheduledCards finds cards across all columns", () => {
+		let board = makeBoard();
+		board = addCard(board, 100, "backlog").board;
+		board = addCard(board, undefined, "in_progress").board;
+		board = addCard(board, undefined, "review").board;
+		expect(getUnscheduledCards(board)).toHaveLength(2);
+	});
+
+	it("getCardsDueBefore finds cards across all columns", () => {
+		let board = makeBoard();
+		board = addCard(board, 100, "backlog").board;
+		board = addCard(board, 200, "in_progress").board;
+		expect(getCardsDueBefore(board, 150)).toHaveLength(1);
+	});
+
+	it("getCardsDueOnOrAfter finds cards across all columns", () => {
+		let board = makeBoard();
+		board = addCard(board, 100, "backlog").board;
+		board = addCard(board, 200, "in_progress").board;
+		expect(getCardsDueOnOrAfter(board, 150)).toHaveLength(1);
+	});
+
+	it("getNearestDueDate considers cards in all columns", () => {
+		let board = makeBoard();
+		board = addCard(board, 500, "backlog").board;
+		board = addCard(board, 100, "in_progress").board;
+		board = addCard(board, 300, "review").board;
+		expect(getNearestDueDate(board)).toBe(100);
+	});
+});
+
+// ─── Default parameter fallback ───────────────────────────────────────────
+
+describe("default parameter fallback", () => {
+	it("isOverdue uses Date.now() when now is omitted", () => {
+		const pastCard = cardWith(Date.now() - 100_000);
+		const futureCard = cardWith(Date.now() + 100_000);
+		expect(isOverdue(pastCard)).toBe(true);
+		expect(isOverdue(futureCard)).toBe(false);
+	});
+
+	it("getOverdueCards uses Date.now() when now is omitted", () => {
+		let board = makeBoard();
+		board = addCard(board, Date.now() - 100_000).board;
+		board = addCard(board, Date.now() + 100_000).board;
+		const overdue = getOverdueCards(board);
+		expect(overdue).toHaveLength(1);
 	});
 });
