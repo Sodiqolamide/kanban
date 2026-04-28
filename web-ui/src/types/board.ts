@@ -42,6 +42,19 @@ export function getTaskAutoReviewCancelButtonLabel(mode: TaskAutoReviewMode | nu
 	return "Cancel Auto-commit";
 }
 
+export type BoardLabelColor = "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "gray";
+
+export const BOARD_LABEL_NAME_MAX_LENGTH = 50;
+export const BOARD_MAX_LABELS = 100;
+export const CARD_MAX_LABELS = 20;
+
+export interface BoardLabel {
+	id: string;
+	name: string;
+	color: BoardLabelColor;
+	createdAt: number;
+}
+
 export interface BoardCard {
 	id: string;
 	title: string;
@@ -55,6 +68,7 @@ export interface BoardCard {
 	baseRef: string;
 	createdAt: number;
 	updatedAt: number;
+	labelIds?: string[];
 }
 
 export interface BoardColumn {
@@ -73,9 +87,7 @@ export interface BoardDependency {
 export interface BoardData {
 	columns: BoardColumn[];
 	dependencies: BoardDependency[];
-}
-
-export interface ReviewTaskWorkspaceSnapshot {
+	labels: BoardLabel[];
 	taskId: string;
 	path: string;
 	branch: string | null;
