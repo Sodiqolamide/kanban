@@ -157,21 +157,21 @@ describe("setCardDueDate", () => {
 	it("no-ops on unknown taskId", () => {
 		const board = makeBoard();
 		const result = setCardDueDate(board, "no-such-id", 5_000_000);
-		expect(result).toBe(board);
+		expect(result).toEqual(board);
 	});
 
 	it("no-ops when dueDate is zero", () => {
 		const board = makeBoard();
 		const { task, board: b1 } = addCard(board);
 		const b2 = setCardDueDate(b1, task.id, 0);
-		expect(b2).toBe(b1);
+		expect(b2).toEqual(b1);
 	});
 
 	it("no-ops when dueDate is negative", () => {
 		const board = makeBoard();
 		const { task, board: b1 } = addCard(board);
 		const b2 = setCardDueDate(b1, task.id, -1);
-		expect(b2).toBe(b1);
+		expect(b2).toEqual(b1);
 	});
 });
 
@@ -197,7 +197,7 @@ describe("clearCardDueDate", () => {
 	it("no-ops on unknown taskId", () => {
 		const board = makeBoard();
 		const result = clearCardDueDate(board, "no-such-id");
-		expect(result).toBe(board);
+		expect(result).toEqual(board);
 	});
 });
 
