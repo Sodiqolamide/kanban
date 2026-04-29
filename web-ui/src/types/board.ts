@@ -42,6 +42,8 @@ export function getTaskAutoReviewCancelButtonLabel(mode: TaskAutoReviewMode | nu
 	return "Cancel Auto-commit";
 }
 
+export type CardPriority = "low" | "medium" | "high" | "critical";
+
 export interface BoardCard {
 	id: string;
 	title: string;
@@ -55,6 +57,7 @@ export interface BoardCard {
 	baseRef: string;
 	createdAt: number;
 	updatedAt: number;
+	priority?: CardPriority;
 }
 
 export interface BoardColumn {

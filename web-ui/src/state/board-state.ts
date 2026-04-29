@@ -11,6 +11,7 @@ import {
 	type BoardColumnId,
 	type BoardData,
 	type BoardDependency,
+	type CardPriority,
 	type CardSelection,
 	DEFAULT_TASK_AUTO_REVIEW_MODE,
 	resolveTaskAutoReviewMode,
@@ -28,6 +29,7 @@ export interface TaskDraft {
 	agentId?: RuntimeAgentId;
 	clineSettings?: RuntimeTaskClineSettings;
 	baseRef: string;
+	priority?: CardPriority | null;
 }
 
 export interface TaskMoveEvent {
@@ -143,6 +145,13 @@ function normalizeTaskClineSettings(input: {
 	};
 }
 
+function normalizeCardPriority(raw: unknown): CardPriority | undefined {
+	if (raw === "low" || raw === "medium" || raw === "high" || raw === "critical") {
+		return raw;
+	}
+	return undefined;
+}
+
 function normalizeCard(rawCard: unknown): BoardCard | null {
 	if (!rawCard || typeof rawCard !== "object") {
 		return null;
@@ -164,6 +173,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		clineReasoningEffort?: unknown;
 		createdAt?: unknown;
 		updatedAt?: unknown;
+		priority?: unknown;
 	};
 	const prompt = typeof card.prompt === "string" ? card.prompt.trim() : "";
 	if (!prompt) {
@@ -186,6 +196,8 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 
 	const now = Date.now();
 
+	const priority = normalizeCardPriority(card.priority);
+
 	return {
 		id: typeof card.id === "string" && card.id ? card.id : createShortTaskId(createBrowserUuid),
 		title,
@@ -201,6 +213,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		...(clineSettings !== undefined ? { clineSettings } : {}),
 		createdAt: typeof card.createdAt === "number" ? card.createdAt : now,
 		updatedAt: typeof card.updatedAt === "number" ? card.updatedAt : now,
+		...(priority !== undefined ? { priority } : {}),
 	};
 }
 
@@ -334,6 +347,7 @@ export function addTaskToColumnWithResult(
 	if (!prompt) {
 		throw new Error("Task prompt is required.");
 	}
+	const draftPriority = draft.priority != null ? normalizeCardPriority(draft.priority) : undefined;
 	const result = runtimeTaskState.addTaskToColumn(
 		board,
 		columnId,
@@ -350,9 +364,20 @@ export function addTaskToColumnWithResult(
 		},
 		createBrowserUuid,
 	);
+	const task: BoardCard = draftPriority !== undefined ? { ...result.task, priority: draftPriority } : result.task;
+	const taskBoard: BoardData =
+		draftPriority !== undefined
+			? {
+					...result.board,
+					columns: result.board.columns.map((col) => ({
+						...col,
+						cards: col.cards.map((c) => (c.id === task.id ? task : c)),
+					})),
+				}
+			: result.board;
 	return {
-		board: result.board,
-		task: result.task,
+		board: taskBoard,
+		task,
 	};
 }
 
@@ -529,6 +554,12 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 			}
 			columnUpdated = true;
 			updated = true;
+			const nextPriority: CardPriority | undefined =
+				draft.priority === undefined
+					? card.priority
+					: draft.priority === null
+						? undefined
+						: (normalizeCardPriority(draft.priority) ?? undefined);
 			return {
 				...card,
 				title: title || card.title,
@@ -546,6 +577,7 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 				clineSettings: draft.clineSettings,
 				baseRef,
 				updatedAt: Date.now(),
+				...(nextPriority !== undefined ? { priority: nextPriority } : { priority: undefined }),
 			};
 		});
 		return columnUpdated ? { ...column, cards } : column;
@@ -723,4 +755,45 @@ export function findCardSelection(board: BoardData, taskId: string): CardSelecti
 
 export function getTaskColumnId(board: BoardData, taskId: string): BoardColumnId | null {
 	return runtimeTaskState.getTaskColumnId(board, taskId);
+}
+
+export function setCardPriority(board: BoardData, taskId: string, priority: CardPriority): BoardData {
+	const normalized = normalizeCardPriority(priority);
+	if (normalized === undefined) {
+		return board;
+	}
+	let found = false;
+	const columns = board.columns.map((column) => {
+		const cards = column.cards.map((card) => {
+			if (card.id !== taskId) {
+				return card;
+			}
+			found = true;
+			return { ...card, priority: normalized };
+		});
+		return found ? { ...column, cards } : column;
+	});
+	if (!found) {
+		return board;
+	}
+	return { ...board, columns };
+}
+
+export function clearCardPriority(board: BoardData, taskId: string): BoardData {
+	let found = false;
+	const columns = board.columns.map((column) => {
+		const cards = column.cards.map((card) => {
+			if (card.id !== taskId) {
+				return card;
+			}
+			found = true;
+			const { priority: _p, ...rest } = card;
+			return rest as BoardCard;
+		});
+		return found ? { ...column, cards } : column;
+	});
+	if (!found) {
+		return board;
+	}
+	return { ...board, columns };
 }
